@@ -1,56 +1,108 @@
-# Local LLM Hardware Sizing & Benchmarks (2026)
+# Local LLM Hardware Planning (2026)
 
-This repository provides empirical hardware constraints, VRAM sizing matrices, and power-draw baselines for running local LLMs in 2026. Designed for engineering teams bypassing cloud APIs, these references cover everything from unified-memory Mini PCs to multi-GPU tensor parallelism. Last updated: June 2026.
+A technical reference for sizing, building, and operating local LLM infrastructure. This repository provides exact VRAM requirement tables, memory bandwidth benchmarks, and Total Cost of Ownership (TCO) calculations for running 7B to 70B reasoning models locally without relying on expensive cloud APIs.
+
+*Last updated: June 2026*
 
 ## What's in this repo
 
-*   [VRAM Sizing by Parameter Count](#vram-sizing--quantization) — Exact gigabyte requirements for 7B to 671B models.
-*   [Bandwidth vs. Capacity Rankings](#memory-bandwidth-vs-capacity) — Why 128GB of RAM can be slower than a 32GB GPU.
-*   [Multi-GPU Rig Architecture](#building-a-multi-gpu-inference-rig) — The $2,000 dual-RTX 3090 blueprint.
-*   [Power Draw & OpEx](#tco--power-consumption) — Idle vs. load wattage and HVAC overhead.
-*   [Quick Reference Assets](#quick-reference-assets) — Downloadable CSVs and architecture cheatsheets.
+*   [**1. Sizing VRAM & Quantization**](#1-sizing-vram--quantization): Formulas for calculating exact model memory footprints.
+*   [**2. Bandwidth vs. Capacity (Unified vs VRAM)**](#2-bandwidth-vs-capacity): Why 128GB of RAM can be slower than 32GB of VRAM.
+*   [**3. GPU & Mini PC Benchmarks**](#3-gpu--mini-pc-benchmarks): RTX 5090 vs PRO 6000 vs Strix Halo vs DGX Spark.
+*   [**4. Multi-GPU Builds & TCO**](#4-multi-gpu-builds--power-tco): PCIe bifurcation and 24/7 electricity costs.
+*   [**Quick Reference Assets**](#quick-reference-assets): CSV tables and build BOMs.
 
 ---
 
-## VRAM Sizing & Quantization
+## 1. Sizing VRAM & Quantization
 
-Parameter counts are highly misleading without factoring in quantization and KV cache overhead. Running at Q4_K_M (4-bit Medium) quantization cuts the required VRAM by roughly 75% compared to native FP16. You must calculate VRAM by multiplying the parameter count by the precision byte-weight (0.5 for 4-bit) and adding a mandatory 15–20% overhead for the context window cache. A quantized 70B model demands ~42GB to comfortably fit in active memory.
+Do not buy hardware based on native FP16 parameter counts. Standard 2026 inference utilizes 4-bit quantization (Q4_K_M), which slashes the base model weight memory footprint by roughly 75%. 
 
-| Model Size | Native FP16 (No Quantization) | 8-Bit (Q8) | 4-Bit (Q4) | Minimum Hardware Target (Q4) |
-| :--- | :--- | :--- | :--- | :--- |
-| **7B** | ~16 GB | ~9 GB | ~6 GB | 8GB - 12GB VRAM |
-| **13B** | ~30 GB | ~16 GB | ~10 GB | 12GB - 16GB VRAM |
-| **32B** | ~72 GB | ~38 GB | ~22 GB | 24GB VRAM (RTX 3090/4090) |
-| **70B** | ~160 GB | ~80 GB | ~42 GB | 48GB VRAM (Dual GPU / Mac) |
-| **120B** | ~270 GB | ~135 GB | ~72 GB | 80GB - 96GB VRAM |
-| **671B (MoE)** | ~1,400 GB | ~700 GB | ~380 GB | Server Cluster / Cloud API |
+**The Calculation:**
+*   `Parameters × 0.5 bytes = Base VRAM (at Q4)`
+*   **KV Cache Tax:** Always add an extra 15% to 20% VRAM capacity to accommodate the context window. An 8K context typically uses 1GB-3GB, while a 128K context can consume over 20GB.
 
-**Full breakdown:** [Exact VRAM calculation formulas and MoE sizing](https://aidevdayindia.org/blogs/run-local-llm-hardware-guide/vram-requirements-by-model-size.html)
-
----
-
-## Memory Bandwidth vs. Capacity
-
-Capacity acts as a hard ceiling (if the model doesn't fit, it spills over the PCIe bus, crashing generation speed). Bandwidth, however, strictly dictates your tokens-per-second output limit. A 128GB unified memory Strix Halo machine can hold massive models, but its ~256 GB/s bus will generate text far slower than a 32GB RTX 5090 pushing 1,800 GB/s. 
-
-| Hardware Platform | Memory Capacity | Memory Bandwidth | Format Focus |
+| Model Size | Native FP16 Size | Q4 Quantized Size | Target Hardware (Minimum) |
 | :--- | :--- | :--- | :--- |
-| **AMD Strix Halo (Ryzen AI Max+)** | Up to 128GB | ~256 GB/s | GGUF |
-| **NVIDIA DGX Spark** | 128GB | 273 GB/s | AWQ / GPTQ |
-| **Apple Mac Studio (M4 Max)** | Up to 128GB | 546 GB/s | GGUF (Metal) |
-| **Discrete NVIDIA RTX 5090** | 32GB | 1,800 GB/s | AWQ / GPTQ (CUDA) |
+| **7B** | ~16 GB | ~6 GB | 8GB - 12GB VRAM |
+| **13B** | ~30 GB | ~10 GB | 12GB - 16GB VRAM |
+| **32B** | ~72 GB | ~22 GB | 24GB VRAM (RTX 3090/4090) |
+| **70B** | ~160 GB | ~42 GB | 48GB VRAM (Dual GPU / Mac) |
 
-**Full breakdown:** [Architectural differences between unified memory and VRAM](https://aidevdayindia.org/blogs/run-local-llm-hardware-guide/unified-memory-vs-vram-explained.html)
+*Format Selection:* Use **AWQ / GPTQ** for dedicated NVIDIA hardware to maximize token speed. Use **GGUF** for Apple Silicon or systems that may need to offload layers to system RAM.
+
+**Full breakdown:** [How Much VRAM to Run Any LLM](https://aidevdayindia.org/blogs/run-local-llm-hardware-guide/vram-requirements-by-model-size.html)
 
 ---
 
-## Building a Multi-GPU Inference Rig
+## 2. Bandwidth vs. Capacity
 
-To run a 70B model efficiently without enterprise pre-built costs, developers use tensor parallelism across consumer GPUs. Sourcing two used RTX 3090s yields 48GB of high-speed VRAM for under $2,000. This requires a motherboard supporting PCIe bifurcation down to an x8/x8 electrical minimum to prevent PCIe bottlenecks, and a Tier-A 1200W–1600W power supply. 
+Capacity dictates *if* a model loads; memory bandwidth dictates *how fast* tokens generate.
 
-Using `vLLM`, you can shard the model weights symmetrically across both cards:
-```bash
-python -m vllm.entrypoints.openai.api_server \
-    --model neural-matrix-70b-q4 \
-    --tensor-parallel-size 2 \
-    --port 8000
+*   **Prompt Processing (TTFT):** Time-to-First-Token is compute-bound (reliant on matrix math cores).
+*   **Token Generation Speed:** The autoregressive loop is strictly memory-bandwidth bound. 
+
+A massive 128GB unified memory pool allows a 70B model to load, but its narrow bus (e.g., 256 GB/s) will output tokens much slower than a dedicated 32GB GPU pushing 1,800 GB/s on a smaller model. If a model exceeds your dedicated GPU VRAM, it triggers a PCIe spill into standard RAM, crashing generation speeds.
+
+**Full breakdown:** [Why 128GB Can Run LLMs Slower Than 32GB](https://aidevdayindia.org/blogs/run-local-llm-hardware-guide/unified-memory-vs-vram-explained.html)
+
+---
+
+## 3. GPU & Mini PC Benchmarks
+
+If tokens-per-second is your priority, use discrete GPUs. If massive single-pool capacity is required on a budget, unified memory Mini PCs are the 2026 standard.
+
+| Hardware Platform | Memory Pool | Bandwidth | Best For |
+| :--- | :--- | :--- | :--- |
+| **NVIDIA RTX 5090** | 32GB VRAM | 1,800 GB/s | Premium consumer speed (Sub-32B models) |
+| **NVIDIA RTX 3090 (Used)** | 24GB VRAM | 936 GB/s | Budget multi-GPU scaling |
+| **NVIDIA PRO 6000** | 96GB VRAM | 960 GB/s | Enterprise 70B single-slot deployments |
+| **NVIDIA DGX Spark** | 128GB Unified | 273 GB/s | High-capacity CUDA-native desktop AI |
+| **AMD Strix Halo (Mini PC)** | 128GB Unified | ~256 GB/s | Cost-effective 70B inference ($2K-$4K) |
+| **Apple Mac Studio (M4 Max)**| 128GB Unified | 546 GB/s | High-bandwidth unified memory setups |
+
+**Full breakdowns:** [Best GPU for Local LLMs](https://aidevdayindia.org/blogs/run-local-llm-hardware-guide/best-gpu-for-local-llm.html) | [Mini PCs for Local LLMs](https://aidevdayindia.org/blogs/run-local-llm-hardware-guide/mini-pc-for-local-llm-inference.html)
+
+---
+
+## 4. Multi-GPU Builds & Power TCO
+
+Two used RTX 3090s (yielding 48GB of effective VRAM via tensor parallelism) can outperform a turnkey enterprise AI box for under $2,000. However, you must account for 24/7 Total Cost of Ownership (TCO):
+
+*   **Idle Power:** A dual-GPU rig idles at 120W–150W. A unified mini PC idles at just 15W–30W.
+*   **Load Power:** Running a 70B model spikes a dual-GPU rig to 750W–850W.
+*   **HVAC Overhead:** A 750W server acts like a space heater. Add 20% to 30% to your electricity bill strictly for ambient cooling compensation.
+
+**Full breakdowns:** [Build a Multi-GPU Local LLM Rig Under $2K](https://aidevdayindia.org/blogs/run-local-llm-hardware-guide/build-local-llm-rig-multi-gpu.html) | [The Real Cost of a 24/7 Local LLM Box](https://aidevdayindia.org/blogs/run-local-llm-hardware-guide/local-llm-power-cooling-costs.html)
+
+---
+
+## Quick Reference Assets
+
+*   [`data/vram-requirements-2026.csv`](data/vram-requirements-2026.csv): A raw structured dataset of FP16, Q8, and Q4 VRAM requirements for embedding into your own provisioning calculators.
+*   [`CHEATSHEET.md`](CHEATSHEET.md): A dense 1-pager on hardware math (bandwidth vs capacity, Q4 parameter mapping).
+*   [`multi-gpu-bom.md`](multi-gpu-bom.md): The minimum viable bill of materials and `vLLM` software execution flags for a dual-RTX 3090 build.
+
+---
+
+## Sources & Deeper Reading
+
+All architecture guidelines and hardware tracking in this repository are based on 2026 empirical benchmarking by Ayush Bisht at AI DEV DAY.
+
+*   [Best Hardware to Run Local LLMs in 2026](https://aidevdayindia.org/blogs/run-local-llm-hardware-guide/run-local-llm-hardware-guide.html)
+*   [How Much VRAM to Run Any LLM](https://aidevdayindia.org/blogs/run-local-llm-hardware-guide/vram-requirements-by-model-size.html)
+*   [Why 128GB Can Run LLMs Slower Than 32GB](https://aidevdayindia.org/blogs/run-local-llm-hardware-guide/unified-memory-vs-vram-explained.html)
+*   [Quantization: Cut LLM VRAM by 75%](https://aidevdayindia.org/blogs/run-local-llm-hardware-guide/quantization-vram-savings-guide.html)
+*   [Best GPU for Local LLMs](https://aidevdayindia.org/blogs/run-local-llm-hardware-guide/best-gpu-for-local-llm.html)
+*   [Mini PCs for Local LLMs](https://aidevdayindia.org/blogs/run-local-llm-hardware-guide/mini-pc-for-local-llm-inference.html)
+*   [Build a Multi-GPU Local LLM Rig](https://aidevdayindia.org/blogs/run-local-llm-hardware-guide/build-local-llm-rig-multi-gpu.html)
+*   [The Real Cost of a 24/7 Local LLM Box](https://aidevdayindia.org/blogs/run-local-llm-hardware-guide/local-llm-power-cooling-costs.html)
+
+## Contributing / Corrections
+
+Hardware pricing and software orchestration (vLLM, llama.cpp) move fast. If you discover updated bandwidth throughputs or newer motherboard bifurcation standards, please open a PR to keep these specifications accurate.
+
+---
+
+**About the Author**
+Created by Ayush Bisht, a Content Engineer and AI Tools Specialist focused on building scalable, private AI ecosystems. Find more hardware testing at [aidevdayindia.org](https://aidevdayindia.org/).
