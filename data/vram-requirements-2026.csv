@@ -1,0 +1,7 @@
+model_size,fp16_native_gb,q8_quantized_gb,q4_quantized_gb,minimum_gpu_target
+7B,16,9,6,8GB-12GB VRAM
+13B,30,16,10,12GB-16GB VRAM
+32B,72,38,22,24GB VRAM
+70B,160,80,42,48GB VRAM
+120B,270,135,72,80GB-96GB VRAM
+671B_MoE,1400,700,380,Server Cluster
